@@ -36,6 +36,37 @@ const PLACEHOLDER_IMAGE = `data:image/svg+xml;base64,` + Buffer.from(`
 </svg>
 `).toString('base64');
 
+const PROGRESS_STATUS = [
+  { status: 'created', text: '交换成功', order: 0 },
+  { status: 'contacted', text: '已联系', order: 1 },
+  { status: 'appointed', text: '已约定', order: 2 },
+  { status: 'shipped', text: '已寄出', order: 3 },
+  { status: 'received', text: '已收到', order: 4 },
+  { status: 'finished', text: '已完成', order: 5 }
+];
+
+function getStatusInfo(status) {
+  return PROGRESS_STATUS.find(s => s.status === status) || PROGRESS_STATUS[0];
+}
+
+function getNextStatus(currentStatus) {
+  const idx = PROGRESS_STATUS.findIndex(s => s.status === currentStatus);
+  if (idx === -1 || idx >= PROGRESS_STATUS.length - 1) return null;
+  return PROGRESS_STATUS[idx + 1];
+}
+
+function createTimelineNode(status, userId, userName) {
+  const info = getStatusInfo(status);
+  return {
+    id: uuidv4(),
+    status: status,
+    statusText: info.text,
+    operatorId: userId,
+    operatorName: userName || '用户',
+    createdAt: new Date().toISOString()
+  };
+}
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, UPLOADS_DIR);
@@ -223,7 +254,7 @@ app.post('/api/items', upload.single('image'), async (req, res) => {
 });
 
 app.post('/api/exchanges', (req, res) => {
-  const { myItemId, targetItemId } = req.body;
+  const { myItemId, targetItemId, userId, userName } = req.body;
 
   if (!myItemId || !targetItemId) {
     return res.status(400).json({ error: '缺少物品ID' });
@@ -256,6 +287,8 @@ app.post('/api/exchanges', (req, res) => {
     return res.status(400).json({ error: '该物品已在交换流程中' });
   }
 
+  const initialNode = createTimelineNode('created', userId || myItem.ownerId, userName || myItem.ownerName);
+
   const newExchange = {
     id: uuidv4(),
     item1Id: myItemId,
@@ -264,7 +297,12 @@ app.post('/api/exchanges', (req, res) => {
     item2Contact: targetItem.contact,
     item1Owner: myItem.ownerId,
     item2Owner: targetItem.ownerId,
+    item1OwnerName: myItem.ownerName,
+    item2OwnerName: targetItem.ownerName,
     status: 'completed',
+    progressStatus: 'created',
+    progressText: '交换成功',
+    timeline: [initialNode],
     createdAt: new Date().toISOString()
   };
 
@@ -301,15 +339,102 @@ app.get('/api/exchanges/my', (req, res) => {
       const item1 = items.find(i => i.id === e.item1Id);
       const item2 = items.find(i => i.id === e.item2Id);
       const isItem1Owner = e.item1Owner === userId;
+      const timeline = e.timeline || [createTimelineNode('created', e.item1Owner, e.item1OwnerName || '用户')];
+      const progressStatus = e.progressStatus || 'created';
+      const progressText = e.progressText || '交换成功';
       return {
         ...e,
         myItem: isItem1Owner ? item1 : item2,
         otherItem: isItem1Owner ? item2 : item1,
-        otherContact: isItem1Owner ? e.item2Contact : e.item1Contact
+        otherContact: isItem1Owner ? e.item2Contact : e.item1Contact,
+        otherOwnerName: isItem1Owner ? (e.item2OwnerName || item2?.ownerName) : (e.item1OwnerName || item1?.ownerName),
+        myOwnerName: isItem1Owner ? (e.item1OwnerName || item1?.ownerName) : (e.item2OwnerName || item2?.ownerName),
+        progressStatus,
+        progressText,
+        timeline
       };
     });
 
   res.json(myExchanges);
+});
+
+app.post('/api/exchanges/:id/progress', (req, res) => {
+  const { id } = req.params;
+  const { userId, userName } = req.body;
+
+  if (!userId) {
+    return res.status(400).json({ error: '缺少用户ID' });
+  }
+
+  const exchanges = readExchanges();
+  const exchangeIdx = exchanges.findIndex(e => e.id === id);
+
+  if (exchangeIdx === -1) {
+    return res.status(404).json({ error: '交换记录不存在' });
+  }
+
+  const exchange = exchanges[exchangeIdx];
+
+  if (exchange.item1Owner !== userId && exchange.item2Owner !== userId) {
+    return res.status(403).json({ error: '无权限操作此交换记录' });
+  }
+
+  const currentStatus = exchange.progressStatus || 'created';
+  const nextStatus = getNextStatus(currentStatus);
+
+  if (!nextStatus) {
+    return res.status(400).json({ error: '已到达最终状态，无法继续推进' });
+  }
+
+  if (!exchange.timeline) {
+    exchange.timeline = [createTimelineNode('created', exchange.item1Owner, exchange.item1OwnerName || '用户')];
+  }
+
+  const newNode = createTimelineNode(nextStatus.status, userId, userName || '用户');
+  exchange.timeline.push(newNode);
+  exchange.progressStatus = nextStatus.status;
+  exchange.progressText = nextStatus.text;
+
+  exchanges[exchangeIdx] = exchange;
+  writeExchanges(exchanges);
+
+  res.json({
+    success: true,
+    progressStatus: exchange.progressStatus,
+    progressText: exchange.progressText,
+    timeline: exchange.timeline,
+    newNode
+  });
+});
+
+app.get('/api/exchanges/:id/timeline', (req, res) => {
+  const { id } = req.params;
+  const { userId } = req.query;
+
+  if (!userId) {
+    return res.status(400).json({ error: '缺少用户ID' });
+  }
+
+  const exchanges = readExchanges();
+  const exchange = exchanges.find(e => e.id === id);
+
+  if (!exchange) {
+    return res.status(404).json({ error: '交换记录不存在' });
+  }
+
+  if (exchange.item1Owner !== userId && exchange.item2Owner !== userId) {
+    return res.status(403).json({ error: '无权限查看此交换记录' });
+  }
+
+  const timeline = exchange.timeline || [createTimelineNode('created', exchange.item1Owner, exchange.item1OwnerName || '用户')];
+  const progressStatus = exchange.progressStatus || 'created';
+  const progressText = exchange.progressText || '交换成功';
+
+  res.json({
+    progressStatus,
+    progressText,
+    timeline
+  });
 });
 
 app.delete('/api/items/:id', (req, res) => {

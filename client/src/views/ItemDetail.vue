@@ -182,7 +182,7 @@ async function handleExchange() {
   }
   exchanging.value = true
   try {
-    await createExchange(selectedMyItemId.value, route.params.id)
+    await createExchange(selectedMyItemId.value, route.params.id, userStore.user.id, userStore.user.name)
     alert('交换成功！双方的真实信息已互相公开，请通过联系方式联系对方完成交换。')
     loadItem()
   } catch (e) {

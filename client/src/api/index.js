@@ -34,10 +34,18 @@ export function deleteItem(id, userId) {
   return api.delete(`/items/${id}`, { params: { userId } }).then(res => res.data)
 }
 
-export function createExchange(myItemId, targetItemId) {
-  return api.post('/exchanges', { myItemId, targetItemId }).then(res => res.data)
+export function createExchange(myItemId, targetItemId, userId, userName) {
+  return api.post('/exchanges', { myItemId, targetItemId, userId, userName }).then(res => res.data)
 }
 
 export function getMyExchanges(userId) {
   return api.get('/exchanges/my', { params: { userId } }).then(res => res.data)
+}
+
+export function advanceExchangeProgress(exchangeId, userId, userName) {
+  return api.post(`/exchanges/${exchangeId}/progress`, { userId, userName }).then(res => res.data)
+}
+
+export function getExchangeTimeline(exchangeId, userId) {
+  return api.get(`/exchanges/${exchangeId}/timeline`, { params: { userId } }).then(res => res.data)
 }
